@@ -68,4 +68,283 @@ document.querySelectorAll('#details p, .foot').forEach(node => {
 	document.querySelectorAll('.filters input,.filters select').forEach(el=>el.addEventListener('input',updateEnhanced));
 	updateEnhanced();
 })();
+</script>
+<style>
+.zs-sos-top{background:#b73532!important;color:#fff}.map-panel{position:relative}.zs-map-sos{position:absolute;right:14px;top:14px;z-index:500;background:#b73532;color:#fff;border-radius:6px;padding:10px 12px;font-weight:700;box-shadow:0 10px 24px #0003}.zs-fab-sos{position:fixed;right:16px;bottom:18px;z-index:1200;background:#b73532;color:#fff;padding:12px 14px;border-radius:999px;font-weight:800;box-shadow:0 12px 24px #0004}.zs-dialog-host{position:fixed;inset:0;display:none;z-index:2000}.zs-dialog-host.open{display:block}.zs-backdrop{position:absolute;inset:0;background:#0c1f1cb3}.zs-dialog{position:relative;width:min(720px,92vw);max-height:92vh;overflow:auto;margin:4vh auto;background:#fff;border-radius:10px;border:1px solid var(--line);box-shadow:0 20px 60px #0005;padding:18px}.zs-dialog h2{margin:0 0 8px;font-size:20px}.zs-dialog p{margin:8px 0}.zs-dialog .subtle{font-size:12px}.zs-close{position:absolute;right:12px;top:10px;background:transparent;color:#5b6f6c;font-size:22px}.zs-auth-tabs{display:flex;gap:8px;margin:8px 0 12px}.zs-auth-tabs button{padding:8px 10px;border-radius:6px;background:#eef4f3;color:#2c4f4a;font-weight:700}.zs-auth-tabs button.active{background:#0f8b82;color:#fff}.zs-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.zs-form-grid .full{grid-column:1/-1}.zs-dialog input{width:100%;min-height:40px;border:1px solid var(--line);border-radius:6px;padding:8px 10px}.zs-row{display:flex;gap:9px;flex-wrap:wrap;margin-top:12px}.zs-btn{padding:10px 13px;border-radius:6px;background:#0f8b82;color:#fff;font-weight:700}.zs-btn.ghost{background:#fff;color:#244843;border:1px solid #9dc2bc}.zs-btn.danger{background:#b73532}.zs-error{margin:8px 0;color:#a42e2a;background:#fdeceb;border:1px solid #f0c6c3;padding:8px 10px;border-radius:6px;display:none}.zs-error.show{display:block}.zs-meta-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.zs-chip{background:#f3f8f7;border:1px solid var(--line);border-radius:6px;padding:10px}.zs-chip small{display:block;color:#607170}.zs-chip b{display:block;margin-top:4px}.zs-warning{border-left:5px solid #b73532;background:#fff2f1}.zs-warning.high{border-left-color:#ca711c;background:#fff8ef}.zs-warning.critical{border-left-color:#b73532;background:#fff0ef;box-shadow:0 0 0 3px #b7353215 inset}.zs-detail-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;padding-top:10px;border-top:1px solid var(--line)}.zs-link{color:#0d7770;font-weight:700;word-break:break-all}.zs-sr{position:absolute;left:-10000px}@media(max-width:680px){.zs-form-grid,.zs-meta-grid{grid-template-columns:1fr}.zs-dialog{padding:14px}.zs-map-sos{right:10px;top:10px}.zs-fab-sos{bottom:14px;right:12px}}
+</style>
+<script>
+(function(){
+  const STORAGE_USERS='zoneshield_users_v1';
+  const STORAGE_SESSION='zoneshield_session_v1';
+  const WARNING_COOLDOWN_MS=120000;
+  const state={currentUser:null,userLocation:null,lastRiskKey:'',lastRiskAt:0,dismissed:{},dialogPersistent:false};
+  const host=document.createElement('div');
+  host.id='zsDialogHost';
+  host.className='zs-dialog-host';
+  host.innerHTML='<div class="zs-backdrop" data-close="1"></div><div class="zs-dialog" role="dialog" aria-modal="true" aria-live="polite"></div>';
+  document.body.appendChild(host);
+  const dialog=host.querySelector('.zs-dialog');
+  function parseJSON(v,f){try{return JSON.parse(v)||f}catch{return f}}
+  function getUsers(){return parseJSON(localStorage.getItem(STORAGE_USERS),[])}
+  function saveUsers(users){localStorage.setItem(STORAGE_USERS,JSON.stringify(users))}
+  function getSession(){return parseJSON(localStorage.getItem(STORAGE_SESSION),'')}
+  function setSession(id){if(id)localStorage.setItem(STORAGE_SESSION,JSON.stringify(id));else localStorage.removeItem(STORAGE_SESSION)}
+  function normPhone(v){return (v||'').replace(/[^\d+]/g,'')}
+  function initials(name){return (name||'ZS').split(' ').filter(Boolean).map(x=>x[0]).slice(0,2).join('').toUpperCase()||'ZS'}
+  function ts(){return new Date().toLocaleString('en-IN')}
+  async function hashPassword(password){
+    if(window.crypto&&window.crypto.subtle&&window.TextEncoder){
+      const digest=await window.crypto.subtle.digest('SHA-256',new TextEncoder().encode(password));
+      return Array.from(new Uint8Array(digest)).map(b=>b.toString(16).padStart(2,'0')).join('');
+    }
+    return btoa(password);
+  }
+  function toPublicUser(user){if(!user)return null;return {id:user.id,fullName:user.fullName,email:user.email,phone:user.phone,emergencyContactName:user.emergencyContactName||'',emergencyContactPhone:user.emergencyContactPhone||''}}
+  function showError(msg){const el=dialog.querySelector('.zs-error');if(!el)return;el.textContent=msg;el.classList.add('show')}
+  function clearError(){const el=dialog.querySelector('.zs-error');if(el){el.classList.remove('show');el.textContent=''}}
+  function closeDialog(force){if(state.dialogPersistent&&!force)return;host.classList.remove('open');dialog.innerHTML='';state.dialogPersistent=false;}
+  function openDialog(html,opts){state.dialogPersistent=!!(opts&&opts.persistent);dialog.innerHTML=html;host.classList.add('open');const f=dialog.querySelector('input,button,select,textarea,a[href]');if(f)f.focus();}
+  function renderNavUser(){
+    const nav=document.querySelector('.nav-user');
+    if(!nav)return;
+    if(state.currentUser){
+      nav.innerHTML=`<span class="tag-demo">AUTH ACTIVE</span><span class="avatar" aria-label="${state.currentUser.fullName}">${initials(state.currentUser.fullName)}</span><strong>${state.currentUser.fullName}</strong><button class="nav-link" id="zsProfileBtn">Profile</button><button class="nav-link" id="zsLogoutBtn">Logout</button>`;
+      const p=document.getElementById('zsProfileBtn');if(p)p.onclick=openProfile;
+      const l=document.getElementById('zsLogoutBtn');if(l)l.onclick=()=>{setSession('');state.currentUser=null;renderNavUser();toast('Logged out successfully.');};
+    }else{
+      nav.innerHTML='<span class="tag-demo">AUTH REQUIRED</span><button class="nav-link" id="zsLoginBtn">Login</button><button class="nav-link" id="zsSignupBtn">Signup</button>';
+      const lb=document.getElementById('zsLoginBtn');if(lb)lb.onclick=()=>openAuth('login');
+      const sb=document.getElementById('zsSignupBtn');if(sb)sb.onclick=()=>openAuth('signup');
+    }
+  }
+  function ensureSosButtons(){
+    const actions=document.querySelector('.topbar .actions');
+    if(actions&&!document.getElementById('zsSosTop')){const b=document.createElement('button');b.id='zsSosTop';b.className='btn zs-sos-top';b.textContent='SOS / Emergency';b.onclick=openSOSConfirm;actions.appendChild(b)}
+    const mapPanel=document.querySelector('.map-panel');
+    if(mapPanel&&!document.getElementById('zsMapSos')){const b=document.createElement('button');b.id='zsMapSos';b.className='zs-map-sos';b.textContent='SOS / Emergency';b.onclick=openSOSConfirm;mapPanel.appendChild(b)}
+    if(!document.getElementById('zsFabSos')){const b=document.createElement('button');b.id='zsFabSos';b.className='zs-fab-sos';b.textContent='SOS';b.setAttribute('aria-label','Open emergency alert confirmation');b.onclick=openSOSConfirm;document.body.appendChild(b)}
+  }
+  function loadSession(){
+    const id=getSession();
+    const user=getUsers().find(u=>u.id===id);
+    state.currentUser=toPublicUser(user||null);
+    renderNavUser();
+  }
+  function openAuth(mode){
+    openDialog(`<button class="zs-close" data-close="1" aria-label="Close authentication dialog">×</button><h2>ZoneShield Authentication</h2><p class="subtle">Local secure demo mode is active in this static build. For production, connect a secure backend or Supabase Auth with protected profile storage.</p><div class="zs-auth-tabs"><button id="tabLogin" class="${mode==='login'?'active':''}">Login</button><button id="tabSignup" class="${mode==='signup'?'active':''}">Signup</button></div><div class="zs-error" role="alert"></div><form id="loginForm" style="display:${mode==='login'?'block':'none'}"><div class="zs-form-grid"><div class="full"><label>Email or Phone<input required id="loginId" autocomplete="username" placeholder="you@example.com or +91..."></label></div><div class="full"><label>Password<input type="password" required id="loginPassword" autocomplete="current-password"></label></div></div><div class="zs-row"><button class="zs-btn" id="loginSubmit">Login</button><button type="button" class="zs-btn ghost" id="forgotBtn">Forgot password</button></div></form><form id="signupForm" style="display:${mode==='signup'?'block':'none'}"><div class="zs-form-grid"><label class="full">Full name<input required id="suName" autocomplete="name"></label><label>Email<input required type="email" id="suEmail" autocomplete="email"></label><label>Phone<input required id="suPhone" autocomplete="tel"></label><label>Password<input required type="password" id="suPassword" autocomplete="new-password"></label><label>Confirm password<input required type="password" id="suConfirm" autocomplete="new-password"></label><label>Emergency contact name<input required id="suEmergencyName"></label><label>Emergency contact phone<input required id="suEmergencyPhone"></label></div><div class="zs-row"><button class="zs-btn" id="signupSubmit">Create account</button></div></form>`,{});
+    const tabLogin=document.getElementById('tabLogin');
+    const tabSignup=document.getElementById('tabSignup');
+    const loginForm=document.getElementById('loginForm');
+    const signupForm=document.getElementById('signupForm');
+    tabLogin.onclick=()=>{tabLogin.classList.add('active');tabSignup.classList.remove('active');loginForm.style.display='block';signupForm.style.display='none';clearError()};
+    tabSignup.onclick=()=>{tabSignup.classList.add('active');tabLogin.classList.remove('active');signupForm.style.display='block';loginForm.style.display='none';clearError()};
+    document.getElementById('forgotBtn').onclick=openForgotPassword;
+    loginForm.onsubmit=async e=>{
+      e.preventDefault();clearError();
+      const submit=document.getElementById('loginSubmit');submit.disabled=true;submit.textContent='Logging in...';
+      try{
+        const identifier=(document.getElementById('loginId').value||'').trim().toLowerCase();
+        const password=document.getElementById('loginPassword').value;
+        if(!identifier||!password)throw new Error('Please provide email/phone and password.');
+        const hash=await hashPassword(password);
+        const users=getUsers();
+        const user=users.find(u=>u.email===identifier||u.phone===normPhone(identifier));
+        if(!user||user.passwordHash!==hash)throw new Error('Invalid credentials. Please try again.');
+        setSession(user.id);state.currentUser=toPublicUser(user);renderNavUser();closeDialog(true);toast('Logged in successfully.');
+      }catch(err){showError(err.message||'Unable to login.');}
+      submit.disabled=false;submit.textContent='Login';
+    };
+    signupForm.onsubmit=async e=>{
+      e.preventDefault();clearError();
+      const submit=document.getElementById('signupSubmit');submit.disabled=true;submit.textContent='Creating account...';
+      try{
+        const fullName=(document.getElementById('suName').value||'').trim();
+        const email=(document.getElementById('suEmail').value||'').trim().toLowerCase();
+        const phone=normPhone(document.getElementById('suPhone').value||'');
+        const password=document.getElementById('suPassword').value;
+        const confirm=document.getElementById('suConfirm').value;
+        const emergencyContactName=(document.getElementById('suEmergencyName').value||'').trim();
+        const emergencyContactPhone=normPhone(document.getElementById('suEmergencyPhone').value||'');
+        if(!fullName||!email||!phone||!password||!confirm||!emergencyContactName||!emergencyContactPhone)throw new Error('Please complete all required fields.');
+        if(password!==confirm)throw new Error('Password and confirm password must match.');
+        const users=getUsers();
+        if(users.some(u=>u.email===email))throw new Error('An account with this email already exists.');
+        if(users.some(u=>u.phone===phone))throw new Error('An account with this phone already exists.');
+        const user={id:'u_'+Date.now(),fullName,email,phone,passwordHash:await hashPassword(password),emergencyContactName,emergencyContactPhone,createdAt:new Date().toISOString()};
+        users.push(user);saveUsers(users);setSession(user.id);state.currentUser=toPublicUser(user);renderNavUser();closeDialog(true);toast('Signup completed and session started.');
+      }catch(err){showError(err.message||'Unable to signup.');}
+      submit.disabled=false;submit.textContent='Create account';
+    };
+  }
+  function openForgotPassword(){
+    openDialog(`<button class="zs-close" data-close="1" aria-label="Close forgot password dialog">×</button><h2>Forgot Password</h2><p class="subtle">Reset using your registered email or phone. This static build performs local reset only.</p><div class="zs-error" role="alert"></div><form id="resetForm"><div class="zs-form-grid"><label class="full">Registered email or phone<input required id="fpIdentifier"></label><label>New password<input required type="password" id="fpPassword"></label><label>Confirm new password<input required type="password" id="fpConfirm"></label></div><div class="zs-row"><button class="zs-btn" id="fpSubmit">Reset password</button><button type="button" class="zs-btn ghost" id="fpBack">Back to login</button></div></form>`,{});
+    document.getElementById('fpBack').onclick=()=>openAuth('login');
+    document.getElementById('resetForm').onsubmit=async e=>{
+      e.preventDefault();clearError();
+      const submit=document.getElementById('fpSubmit');submit.disabled=true;submit.textContent='Resetting...';
+      try{
+        const identifier=(document.getElementById('fpIdentifier').value||'').trim().toLowerCase();
+        const password=document.getElementById('fpPassword').value;
+        const confirm=document.getElementById('fpConfirm').value;
+        if(!identifier||!password||!confirm)throw new Error('Please complete all required fields.');
+        if(password!==confirm)throw new Error('Password and confirm password must match.');
+        const users=getUsers();
+        const idx=users.findIndex(u=>u.email===identifier||u.phone===normPhone(identifier));
+        if(idx===-1)throw new Error('No account found for the provided identifier.');
+        users[idx].passwordHash=await hashPassword(password);
+        saveUsers(users);
+        toast('Password reset successful. Please login.');
+        openAuth('login');
+      }catch(err){showError(err.message||'Unable to reset password.');}
+      submit.disabled=false;submit.textContent='Reset password';
+    };
+  }
+  function openProfile(){
+    if(!state.currentUser){openAuth('login');return;}
+    openDialog(`<button class="zs-close" data-close="1" aria-label="Close profile dialog">×</button><h2>Profile & Emergency Contact</h2><p class="subtle">Emergency contact details remain private to your authenticated session.</p><div class="zs-error" role="alert"></div><div class="zs-form-grid"><label class="full">Full name<input id="pfName" value="${state.currentUser.fullName}" disabled></label><label>Email<input id="pfEmail" value="${state.currentUser.email}" disabled></label><label>Phone<input id="pfPhone" value="${state.currentUser.phone}" disabled></label><label>Emergency contact name<input id="pfEcName" value="${state.currentUser.emergencyContactName||''}"></label><label>Emergency contact phone<input id="pfEcPhone" value="${state.currentUser.emergencyContactPhone||''}"></label></div><div class="zs-row"><button class="zs-btn" id="pfSave">Save / Update</button><button class="zs-btn ghost" id="pfLogout">Logout</button></div>`,{});
+    document.getElementById('pfSave').onclick=()=>{
+      clearError();
+      const emergencyContactName=(document.getElementById('pfEcName').value||'').trim();
+      const emergencyContactPhone=normPhone(document.getElementById('pfEcPhone').value||'');
+      if(!emergencyContactName||!emergencyContactPhone){showError('Emergency contact name and phone are required.');return;}
+      const users=getUsers();
+      const idx=users.findIndex(u=>u.id===state.currentUser.id);
+      if(idx===-1){showError('Session expired. Please login again.');return;}
+      users[idx].emergencyContactName=emergencyContactName;
+      users[idx].emergencyContactPhone=emergencyContactPhone;
+      saveUsers(users);
+      state.currentUser=toPublicUser(users[idx]);
+      renderNavUser();
+      toast('Emergency contact updated.');
+      closeDialog(true);
+    };
+    document.getElementById('pfLogout').onclick=()=>{setSession('');state.currentUser=null;renderNavUser();closeDialog(true);toast('Logged out successfully.');};
+  }
+  function getMainHazard(h){if(!h)return'Unavailable';return Object.entries({Landslide:h.landslide,Flood:h.flood,'Coastal erosion':h.coastal,Cloudburst:h.cloudburst}).sort((a,b)=>b[1]-a[1])[0][0]}
+  function haversineKm(a,b,c,d){const R=6371;const toRad=v=>v*Math.PI/180;const dLat=toRad(c-a),dLng=toRad(d-b);const aa=Math.sin(dLat/2)**2+Math.cos(toRad(a))*Math.cos(toRad(c))*Math.sin(dLng/2)**2;return 2*R*Math.atan2(Math.sqrt(aa),Math.sqrt(1-aa));}
+  function getNearestHabitation(coords){if(!coords||!window.habitations)return null;let best=null;for(const h of window.habitations){const km=haversineKm(coords.lat,coords.lng,h.lat,h.lng);if(!best||km<best.km)best={h,km};}return best;}
+  function riskContext(coords){
+    let src=null,distance='Unavailable';
+    if(coords){const near=getNearestHabitation(coords);if(near){src=window.score?window.score(near.h):near.h;distance=near.km.toFixed(1)+' km';}}
+    if(!src&&window.selected)src=window.score?window.score(window.selected):window.selected;
+    if(!src)return {riskLevel:'Unavailable',hazardType:'Unavailable',distance,reference:null};
+    const riskLevel=src.risk==='High'&&src.priority>=85?'CRITICAL':src.risk==='High'?'HIGH':src.risk.toUpperCase();
+    return {riskLevel,hazardType:getMainHazard(src),distance,reference:src};
+  }
+  function getMapsLink(coords){return coords?`https://www.google.com/maps?q=${coords.lat},${coords.lng}`:''}
+  function sanitizeDial(v){return (v||'').replace(/[^\d+]/g,'')}
+  async function getLocation(){
+    if(state.userLocation)return state.userLocation;
+    if(!navigator.geolocation)throw new Error('Location services are not supported in this browser.');
+    return new Promise((resolve,reject)=>navigator.geolocation.getCurrentPosition(p=>{state.userLocation={lat:p.coords.latitude,lng:p.coords.longitude};resolve(state.userLocation)},()=>reject(new Error('Location permission unavailable. Enable location to include precise coordinates.')),{enableHighAccuracy:true,timeout:10000}));
+  }
+  function buildEmergencyMessage(mapsLink,riskLevel,hazard,time){
+    return `🚨 ZoneShield Emergency Alert
+I may be in danger and need assistance.
+Location: ${mapsLink||'Unavailable'}
+Risk Level: ${riskLevel||'Unavailable'}
+Hazard: ${hazard||'Unavailable'}
+Time: ${time}`;
+  }
+  async function shareEmergencyMessage(message,mapsLink){
+    if(navigator.share){
+      await navigator.share({title:'ZoneShield Emergency Alert',text:message,url:mapsLink||undefined});
+      toast('Emergency message shared.');
+      return;
+    }
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      await navigator.clipboard.writeText(message);
+      toast('Emergency message copied to clipboard.');
+      return;
+    }
+    window.prompt('Copy and share this emergency message:',message);
+  }
+  async function shareLocationLink(mapsLink){
+    if(!mapsLink){toast('Location link unavailable. Please allow location access.');return;}
+    if(navigator.share){await navigator.share({title:'My Location',text:'ZoneShield location link',url:mapsLink});toast('Location shared.');return;}
+    if(navigator.clipboard&&navigator.clipboard.writeText){await navigator.clipboard.writeText(mapsLink);toast('Location link copied to clipboard.');return;}
+    window.prompt('Copy this location link:',mapsLink);
+  }
+  function openSOSConfirm(){
+    openDialog(`<button class="zs-close" data-close="1" aria-label="Close emergency confirmation">×</button><h2>EMERGENCY ALERT</h2><p>Are you sure you want to activate an emergency alert?</p><div class="zs-row"><button class="zs-btn ghost" data-close="1">Cancel</button><button class="zs-btn danger" id="activateEmergencyBtn">Activate Emergency</button></div>`,{});
+    document.getElementById('activateEmergencyBtn').onclick=activateEmergency;
+  }
+  async function activateEmergency(){
+    openDialog(`<h2>🚨 Emergency Alert Activated</h2><p>Preparing emergency details...</p><p class="subtle">Collecting location, risk context, and emergency contact.</p>`,{persistent:true});
+    let coords=null,error='';
+    try{coords=await getLocation();}catch(e){error=e.message||'Location unavailable.';}
+    const rc=riskContext(coords);
+    const contactName=state.currentUser?.emergencyContactName||'Unavailable';
+    const contactPhone=state.currentUser?.emergencyContactPhone||'';
+    const mapsLink=getMapsLink(coords);
+    const when=ts();
+    const message=buildEmergencyMessage(mapsLink,rc.riskLevel,rc.hazardType,when);
+    openDialog(`<button class="zs-close" data-close="1" aria-label="Close emergency modal">×</button><h2>🚨 Emergency Alert Activated</h2>${error?`<div class="zs-error show">${error}</div>`:''}<div class="zs-meta-grid"><div class="zs-chip"><small>Current user location</small><b>${coords?`${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)}`:'Unavailable'}</b></div><div class="zs-chip"><small>Current risk level</small><b>${rc.riskLevel}</b></div><div class="zs-chip"><small>Detected hazard type</small><b>${rc.hazardType}</b></div><div class="zs-chip"><small>Timestamp</small><b>${when}</b></div><div class="zs-chip"><small>Emergency contact name</small><b>${contactName}</b></div><div class="zs-chip"><small>Emergency contact phone</small><b>${contactPhone||'Unavailable'}</b></div></div><p><a class="zs-link" href="${mapsLink||'#'}" ${mapsLink?'target="_blank" rel="noopener noreferrer"':'aria-disabled="true"'}>${mapsLink||'Google Maps link unavailable'}</a></p><div class="zs-row"><a class="zs-btn danger" href="tel:112">Call Emergency Services</a><a class="zs-btn" href="${contactPhone?`tel:${sanitizeDial(contactPhone)}`:'#'}" ${contactPhone?'':'aria-disabled="true"'}>Call Emergency Contact</a><button class="zs-btn ghost" id="shareLocationBtn">Share My Location</button><button class="zs-btn ghost" id="shareMessageBtn">Share Emergency Message</button><button class="zs-btn ghost" data-close="1">Cancel Alert</button></div><p class="subtle">Use these actions explicitly. ZoneShield does not auto-dial or auto-send messages.</p>`,{});
+    const sl=document.getElementById('shareLocationBtn');if(sl)sl.onclick=()=>shareLocationLink(mapsLink);
+    const sm=document.getElementById('shareMessageBtn');if(sm)sm.onclick=()=>shareEmergencyMessage(message,mapsLink);
+  }
+  function showRiskWarning(payload){
+    const persistent=payload.riskLevel==='CRITICAL';
+    openDialog(`<button class="zs-close" data-close="1" aria-label="Close risk warning">×</button><h2>⚠️ HIGH RISK AREA</h2><p>You are currently near a potentially dangerous area.</p><div class="zs-warning ${payload.riskLevel==='CRITICAL'?'critical':'high'} zs-chip"><small>Risk level</small><b>${payload.riskLevel}</b><small>Hazard type</small><b>${payload.hazardType}</b><small>Distance from risk zone</small><b>${payload.distance}</b><small>Timestamp</small><b>${payload.time}</b><small>Safety recommendation</small><b>${payload.recommendation}</b></div><div class="zs-row"><button class="zs-btn" id="safeLocationBtn">View Safe Location</button><button class="zs-btn danger" id="warningSosBtn">Emergency / SOS</button><button class="zs-btn ghost" id="dismissWarningBtn">Dismiss</button></div>`,{persistent});
+    const safe=document.getElementById('safeLocationBtn');if(safe)safe.onclick=()=>{viewSafeLocation(payload.habitationId);closeDialog(true)};
+    const sos=document.getElementById('warningSosBtn');if(sos)sos.onclick=openSOSConfirm;
+    const dismiss=document.getElementById('dismissWarningBtn');if(dismiss)dismiss.onclick=()=>{state.dismissed[payload.key]=Date.now();closeDialog(true)};
+  }
+  function maybeShowRiskWarning(coords){
+    const near=getNearestHabitation(coords);if(!near||!window.score)return;
+    const scored=window.score(near.h);
+    if(scored.risk!=='High')return;
+    const riskLevel=scored.priority>=85?'CRITICAL':'HIGH';
+    const key=`${near.h.id}_${riskLevel}`;
+    const now=Date.now();
+    if(state.dismissed[key]&&now-state.dismissed[key]<WARNING_COOLDOWN_MS)return;
+    if(state.lastRiskKey===key&&now-state.lastRiskAt<WARNING_COOLDOWN_MS)return;
+    state.lastRiskKey=key;state.lastRiskAt=now;
+    const recommendation=riskLevel==='CRITICAL'?'Move away immediately, keep communication open, and prepare evacuation support.':'Stay alert, avoid hazard-prone zones, and keep emergency contacts ready.';
+    showRiskWarning({key,riskLevel,hazardType:getMainHazard(scored),distance:near.km.toFixed(1)+' km',time:ts(),recommendation,habitationId:near.h.id});
+  }
+  let userMarker=null;
+  window.locateUser=function(){
+    if(!navigator.geolocation){toast('Geolocation is not supported.');return;}
+    navigator.geolocation.getCurrentPosition(pos=>{
+      state.userLocation={lat:pos.coords.latitude,lng:pos.coords.longitude};
+      map.setView([state.userLocation.lat,state.userLocation.lng],11);
+      if(userMarker&&map.hasLayer(userMarker))map.removeLayer(userMarker);
+      userMarker=L.marker([state.userLocation.lat,state.userLocation.lng]).addTo(map).bindPopup('Your current location').openPopup();
+      maybeShowRiskWarning(state.userLocation);
+    },()=>toast('Location permission was not available.'));
+  };
+  function viewSafeLocation(id){
+    const targetId=id||(window.selected&&window.selected.id);
+    if(!targetId){toast('Select a habitation first to find safer options.');return;}
+    const h=window.habitations&&window.habitations.find(x=>x.id===targetId);
+    if(!h||!window.score||!window.rankedSites){toast('Safe location data is unavailable.');return;}
+    const scored=window.score(h);
+    const sites=window.rankedSites(scored);
+    const best=sites.find(s=>s.available>=scored.population&&s.safety>=75&&s.infrastructure>=70)||sites[0];
+    if(typeof window.showDetails==='function')window.showDetails(targetId);
+    if(window.map&&h.lat&&h.lng)window.map.setView([h.lat,h.lng],10);
+    if(best){toast(`Find Safe Location: ${best.name} · ${best.distance.toFixed(1)} km. Verify conditions on ground; no location is guaranteed safe.`);}else{toast('No safer nearby relocation candidate found in current dataset.');}
+  }
+  window.viewSafeLocation=viewSafeLocation;
+  const previousShow=window.showDetails;
+  window.showDetails=function(id){
+    previousShow(id);
+    const details=document.getElementById('details');
+    if(!details)return;
+    let row=details.querySelector('.zs-detail-actions');
+    if(!row){
+      row=document.createElement('div');
+      row.className='zs-detail-actions';
+      row.innerHTML='<button class="zs-btn" id="zsFindSafeBtn">Find Safe Location</button><button class="zs-btn danger" id="zsDetailSosBtn">SOS / Emergency</button>';
+      details.appendChild(row);
+    }
+    const b1=document.getElementById('zsFindSafeBtn');if(b1)b1.onclick=()=>viewSafeLocation(id);
+    const b2=document.getElementById('zsDetailSosBtn');if(b2)b2.onclick=openSOSConfirm;
+  };
+  host.addEventListener('click',e=>{if(e.target&&e.target.getAttribute&&e.target.getAttribute('data-close')==='1')closeDialog(false)});
+  document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDialog(false)});
+  ensureSosButtons();
+  loadSession();
+})();
 </script></body></html>
